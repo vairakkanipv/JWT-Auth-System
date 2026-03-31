@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+import hashlib
+import base64
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,23 +10,33 @@ from app.config import settings
 from app.database import get_db
 from app.schemas import TokenPayload
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 # Bearer token scheme
 bearer_scheme = HTTPBearer()
 
 
 # ── Password Utilities ────────────────────────────────────────────────────────
 
+def _prepare_password(password: str) -> bytes:
+    """
+    SHA-256 + base64 encode the password before bcrypt.
+    Result is always 44 ASCII chars — safely under bcrypt's 72-byte limit.
+    """
+    digest = hashlib.sha256(password.encode("utf-8")).digest()
+    return base64.b64encode(digest)
+
+
 def hash_password(password: str) -> str:
-    """Hash a plain-text password."""
-    return pwd_context.hash(password)
+    """Hash a plain-text password using bcrypt directly."""
+    hashed = bcrypt.hashpw(_prepare_password(password), bcrypt.gensalt(rounds=12))
+    return hashed.decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a plain-text password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a plain-text password against its bcrypt hash."""
+    return bcrypt.checkpw(
+        _prepare_password(plain_password),
+        hashed_password.encode("utf-8")
+    )
 
 
 # ── JWT Utilities ─────────────────────────────────────────────────────────────
@@ -83,8 +94,8 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ):
-    """FastAPI dependency — resolves Bearer token → User ORM object."""
-    from app.services import UserService  # local import to avoid circular
+    """FastAPI dependency — resolves Bearer token to User ORM object."""
+    from app.services import UserService
 
     token_data = decode_token(credentials.credentials)
 
